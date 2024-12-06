@@ -2,7 +2,9 @@ import serial
 import configparser
 import os
 import logging
+import time
 from flask import Flask, jsonify
+import threading
 
 # Initialize the Flask app
 app = Flask(__name__)
@@ -14,7 +16,7 @@ log_file = 'app.logs'
 # Create a file handler to write logs to a file
 file_handler = logging.FileHandler(log_file)
 file_handler.setFormatter(log_formatter)
-file_handler.setLevel(logging.INFO)  # You can adjust the log level as needed
+file_handler.setLevel(logging.INFO)
 
 # Create a stream handler to suppress logs on the terminal
 stream_handler = logging.StreamHandler()
@@ -81,9 +83,11 @@ class RS485Communicator:
         self.port = port
         self.baudrate = baudrate
         self.ser = None
+        self.reconnect_thread = threading.Thread(target=self.reconnect, daemon=True)
+        self.reconnect_thread.start()
 
     def open_connection(self):
-        """Open the serial connection once at the start."""
+        """Open the serial connection once at the start or reconnect if needed."""
         if self.ser is None or not self.ser.is_open:
             try:
                 self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
@@ -92,24 +96,40 @@ class RS485Communicator:
                 logging.error(f"Error opening serial port {self.port}: {e}")
                 self.ser = None
 
+    def reconnect(self):
+        """Keep attempting to reconnect in the background."""
+        while True:
+            if not self.ser or not self.ser.is_open:
+                logging.warning("Serial port not open, attempting to reconnect...")
+                self.open_connection()
+            time.sleep(5)  # Check every 5 seconds
+
     def send_packet(self, packet):
         """
         Send a packet to the device via the open serial connection.
+        If the connection is lost, it will attempt to reconnect.
         :param packet: Packet as a hex string.
+        :raises: SerialException if the connection is lost or write fails.
         """
-        if self.ser and self.ser.is_open:
-            try:
-                # Convert the raw packet (hex string) to bytes
-                packet_bytes = bytes.fromhex(packet)
-
-                # Send the packet over the serial port
-                self.ser.write(packet_bytes)
-                logging.info(f"Sent packet: {packet}")
-            except serial.SerialException as e:
-                logging.error(f"Serial error while sending packet: {e}")
-        else:
-            logging.warning("Serial port not open, attempting to reopen...")
+        # Check if serial connection is open, else attempt to reconnect
+        if not self.ser or not self.ser.is_open:
+            logging.warning("Serial port not open, attempting to reconnect...")
             self.open_connection()
+
+        if not self.ser or not self.ser.is_open:
+            logging.error("Failed to reconnect after multiple attempts.")
+            raise serial.SerialException("Serial connection failed during operation.")
+
+        try:
+            # Convert the raw packet (hex string) to bytes
+            packet_bytes = bytes.fromhex(packet)
+
+            # Send the packet over the serial port
+            self.ser.write(packet_bytes)
+            logging.info(f"Sent packet: {packet}")
+        except serial.SerialException as e:
+            logging.error(f"Serial error while sending packet: {e}")
+            raise  # Re-raise the exception to be caught in the API
 
 
 def load_config(config_file='app.conf'):
@@ -166,19 +186,27 @@ def open_door_api(address, door_number):
     :return: JSON response indicating success or failure.
     """
     try:
+        communicator = RS485Communicator(USB_PORT, BAUDRATE)
+        communicator.open_connection()
         open_door(communicator, address, door_number)
         return jsonify({"status": "success", "message": f"Door {door_number} on device {address} opened."}), 200
+    except serial.SerialException as e:
+        logging.error(f"Serial error while processing request for door {door_number} on device {address}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to open door {door_number} on device {address}: {str(e)}"}), 500
     except Exception as e:
-        logging.error(f"Failed to open door {door_number} on device {address}: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 400
+        logging.error(f"Unexpected error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 if __name__ == "__main__":
-    # Open the serial connection before starting the Flask app
+    # Attempt to open the serial connection before starting the Flask app
     communicator.open_connection()
-    print("Online Lock serial to API by https://sajX.net/")
+
+    # Check if the serial connection was successful, if not, don't start the Flask app
+    if not communicator.ser or not communicator.ser.is_open:
+        logging.error("Cannot start the application. Serial connection failed.")
+        sys.exit(1)  # Exit the application with an error code
 
     # Run the Flask application with host and port from app.conf
     logging.info(f"Starting Flask app on {HOST}:{PORT}")
-    print("The app is started successfully.")
     app.run(host=HOST, port=PORT)
