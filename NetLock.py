@@ -210,4 +210,5 @@ if __name__ == "__main__":
 
     # Run the Flask application with host and port from app.conf
     logging.info(f"Starting Flask app on {HOST}:{PORT}")
+    print("Online lock HL1010.v2 API by https://SajX.net")
     app.run(host=HOST, port=PORT)
