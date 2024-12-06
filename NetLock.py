@@ -130,6 +130,8 @@ class RS485Communicator:
             logging.info(f"Sent packet: {packet}")
         except serial.SerialException as e:
             logging.error(f"Serial error while sending packet: {e}")
+            self.ser.close()
+            self.open_connection()
             raise  # Re-raise the exception to be caught in the API
 
 
@@ -187,8 +189,8 @@ def open_door_api(address, door_number):
     :return: JSON response indicating success or failure.
     """
     try:
-        communicator = RS485Communicator(USB_PORT, BAUDRATE)
-        communicator.open_connection()
+        # communicator = RS485Communicator(USB_PORT, BAUDRATE)
+        # communicator.open_connection()
         open_door(communicator, address, door_number)
         return jsonify({"status": "success", "message": f"Door {door_number} on device {address} opened."}), 200
     except serial.SerialException as e:
